@@ -335,26 +335,40 @@ test('pad access control: own vs public vs invited', async () => {
 });
 
 test('public pad destructive ops require creator or admin', async () => {
-  const server = await startServer();
+  const server = await startServer({ ADMIN_TOKEN: 'admin123' });
   try {
     const user = await registerUser(server.baseUrl);
 
-    // Public pad 1 (creatorCode=null) - authenticated user can set password
+    // Public pad 1 (creatorCode=null) - admin can set password
     const res = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...cookieHeader(user.cookie) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...cookieHeader(user.cookie),
+        Origin: server.baseUrl,
+      },
       body: JSON.stringify({ password: 'test' }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 403, 'regular user cannot manage public pad');
+
+    const adminRes = await fetch(`${server.baseUrl}/api/pads/1/password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': 'admin123',
+        Origin: server.baseUrl,
+      },
+      body: JSON.stringify({ password: 'test' }),
+    });
+    assert.equal(adminRes.status, 200, 'admin can manage public pad');
 
     // Anonymous user cannot set password on public pad
     const anon = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl },
       body: JSON.stringify({ password: 'test2' }),
     });
-    // Should fail (401 or 403 depending on implementation)
-    assert.ok(anon.status >= 400);
+    assert.equal(anon.status, 401, 'anonymous cannot set password');
   } finally {
     await stopServer(server);
   }
@@ -381,12 +395,33 @@ test('WebSocket requires valid token for private pads', async () => {
     });
     assert.equal(wsResult.code, 4401, 'Should reject with 4401 (access denied)');
 
-    // Authenticated WS connection should succeed
-    const ws2 = new WebSocket(`${server.wsUrl}/?pad=${pad.id}&token=${alice.token}`);
-    await new Promise((resolve, reject) => {
-      ws2.once('open', resolve);
+    // Query-string session tokens are ignored; a successful auth path must use cookies.
+    const queryTokenResult = await new Promise((resolve) => {
+      const ws = new WebSocket(`${server.wsUrl}/?pad=${pad.id}&token=${alice.token}`);
+      ws.once('close', (code) => resolve({ code }));
+      ws.once('error', () => resolve({ code: -1 }));
+      setTimeout(() => resolve({ code: 0 }), 1000);
+    });
+    assert.equal(queryTokenResult.code, 4401, 'query-string token should not authenticate');
+
+    // Authenticated WS connection should receive the application hello message.
+    const ws2 = new WebSocket(`${server.wsUrl}/?pad=${pad.id}`, {
+      headers: cookieHeader(alice.cookie),
+    });
+    const hello = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for hello')), 1000);
+      ws2.once('message', (raw) => {
+        clearTimeout(timeout);
+        resolve(JSON.parse(String(raw)));
+      });
+      ws2.once('close', (code) => {
+        clearTimeout(timeout);
+        reject(new Error(`WebSocket closed before hello: ${code}`));
+      });
       ws2.once('error', reject);
     });
+    assert.equal(hello.type, 'hello');
+    assert.equal(hello.userId, alice.code);
     ws2.close();
   } finally {
     await stopServer(server);
@@ -420,8 +455,14 @@ test('missing origin header is allowed (same-origin non-browser)', async () => {
   try {
     const user = await registerUser(server.baseUrl);
 
-    // No Origin header - should succeed
-    const res = await fetch(`${server.baseUrl}/api/pads/1/password`, {
+    // No Origin header on GET request - should succeed (safe methods skip Origin check)
+    const getRes = await fetch(`${server.baseUrl}/api/state`, {
+      headers: { ...cookieHeader(user.cookie) },
+    });
+    assert.equal(getRes.status, 200);
+
+    // No Origin header on POST request - should be rejected (state-changing methods require Origin)
+    const postRes = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -429,7 +470,7 @@ test('missing origin header is allowed (same-origin non-browser)', async () => {
       },
       body: JSON.stringify({ password: 'test' }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(postRes.status, 403, 'state-changing requests without Origin are rejected');
   } finally {
     await stopServer(server);
   }
@@ -452,7 +493,7 @@ test('PUBLIC_ORIGIN env var configures origin check', async () => {
     });
     assert.equal(wrong.status, 403);
 
-    // Correct origin should pass
+    // Correct origin should pass (but still need admin for public pad)
     const correct = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
       headers: {
@@ -462,7 +503,7 @@ test('PUBLIC_ORIGIN env var configures origin check', async () => {
       },
       body: JSON.stringify({ password: null }),
     });
-    assert.equal(correct.status, 200);
+    assert.equal(correct.status, 403, 'public pad still requires admin even with correct origin');
   } finally {
     await stopServer(server);
   }
@@ -507,7 +548,7 @@ test('password change accepts currentPassword when unlock token is missing/expir
     // Verify the new password works via unlock
     const unlockRes = await fetch(`${server.baseUrl}/api/pads/${pad.id}/unlock`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie) },
       body: JSON.stringify({ password: 'newpass' }),
     });
     assert.equal(unlockRes.status, 200);
@@ -516,7 +557,7 @@ test('password change accepts currentPassword when unlock token is missing/expir
     // Old password should no longer unlock
     const oldUnlock = await fetch(`${server.baseUrl}/api/pads/${pad.id}/unlock`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie) },
       body: JSON.stringify({ password: 'oldpass' }),
     });
     assert.equal(oldUnlock.status, 403);
@@ -765,23 +806,23 @@ test('legacy pad with ADMIN_TOKEN requires admin for delete', async () => {
   }
 });
 
-test('legacy pad without ADMIN_TOKEN allows any auth user (fallback B)', async () => {
+test('legacy pad without ADMIN_TOKEN still requires admin-level management', async () => {
   const server = await startServer(); // no ADMIN_TOKEN
   try {
     const user = await registerUser(server.baseUrl);
 
-    // Without ADMIN_TOKEN, any authenticated user can manage legacy pad
+    // Without ADMIN_TOKEN, legacy pad requires admin (fallback removed for security)
     const res = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...cookieHeader(user.cookie) },
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(user.cookie), Origin: server.baseUrl },
       body: JSON.stringify({ password: 'test123' }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 403, 'legacy pad now requires admin');
 
     // Anonymous still cannot
     const anon = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl },
       body: JSON.stringify({ password: 'test456' }),
     });
     assert.ok(anon.status >= 400);
@@ -862,15 +903,44 @@ test('unauthorized upload rejected even when padId arrives after file part', asy
   }
 });
 
-test('WebSocket rejects connection to password-protected pad without unlock token', async () => {
+test('upload to nonexistent pad is rejected', async () => {
   const server = await startServer();
   try {
     const user = await registerUser(server.baseUrl);
+    const formData = new FormData();
+    formData.append('file', new Blob(['orphan content'], { type: 'text/plain' }), 'orphan.txt');
+    formData.append('padId', '999');
 
-    // Set a password on public pad 1
+    const upload = await fetch(`${server.baseUrl}/api/upload`, {
+      method: 'POST',
+      headers: cookieHeader(user.cookie),
+      body: formData,
+    });
+    assert.equal(upload.status, 404);
+
+    const state = await fetch(`${server.baseUrl}/api/state`, {
+      headers: cookieHeader(user.cookie),
+    });
+    const stateData = await state.json();
+    assert.equal(stateData.files.some(f => f.padId === 999), false);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('WebSocket rejects connection to password-protected pad without unlock token', async () => {
+  const server = await startServer({ ADMIN_TOKEN: 'admin123' });
+  try {
+    const user = await registerUser(server.baseUrl);
+
+    // Set a password on public pad 1 (requires admin)
     const setRes = await fetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...cookieHeader(user.cookie) },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': 'admin123',
+        Origin: server.baseUrl,
+      },
       body: JSON.stringify({ password: 'secret' }),
     });
     const setData = await setRes.json();
@@ -899,32 +969,143 @@ test('WebSocket rejects connection to password-protected pad without unlock toke
 });
 
 test('legacy public file cannot be deleted anonymously', async () => {
-  const server = await startServer();
+  const server = await startServer({ ADMIN_TOKEN: 'admin123' });
   try {
     // Upload a file anonymously (creates ownerUserId=null legacy-style file on public pad)
     const formData = new FormData();
     formData.append('padId', '1');
     formData.append('file', new Blob(['x'], { type: 'text/plain' }), 'legacy.txt');
-    const upload = await fetch(`${server.baseUrl}/api/upload`, { method: 'POST', body: formData });
+    const upload = await fetch(`${server.baseUrl}/api/upload`, { method: 'POST', body: formData, headers: { Origin: server.baseUrl } });
     assert.equal(upload.status, 200);
     const file = await upload.json();
 
-    // Anonymous deletion should be rejected (previously anyone could delete)
+    // Anonymous deletion should be rejected
     const anonDel = await fetch(`${server.baseUrl}/api/files/${file.id}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl },
       body: JSON.stringify({}),
     });
     assert.equal(anonDel.status, 401, 'anonymous delete of legacy public file should be rejected');
 
-    // Authenticated user can still delete (fallback B for legacy pads without ADMIN_TOKEN)
+    // Regular auth user cannot delete legacy pad files (requires admin)
     const other = await registerUser(server.baseUrl);
     const del = await fetch(`${server.baseUrl}/api/files/${file.id}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', ...cookieHeader(other.cookie) },
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(other.cookie), Origin: server.baseUrl },
       body: JSON.stringify({}),
     });
-    assert.equal(del.status, 200, 'auth user can manage legacy pad (fallback B)');
+    assert.equal(del.status, 403, 'regular auth user cannot delete legacy pad files');
+
+    // Admin can delete
+    const adminDel = await fetch(`${server.baseUrl}/api/files/${file.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'x-admin-token': 'admin123', Origin: server.baseUrl },
+      body: JSON.stringify({}),
+    });
+    assert.equal(adminDel.status, 200, 'admin can delete legacy pad files');
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('password-protected pad files require unlock token for delete and clear', async () => {
+  const server = await startServer();
+  try {
+    const alice = await registerUser(server.baseUrl);
+
+    const padRes = await fetch(`${server.baseUrl}/api/pads`, {
+      method: 'POST',
+      headers: cookieHeader(alice.cookie),
+    });
+    const pad = await padRes.json();
+
+    const setPassword = await fetch(`${server.baseUrl}/api/pads/${pad.id}/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie), Origin: server.baseUrl },
+      body: JSON.stringify({ password: 'secret' }),
+    });
+    assert.equal(setPassword.status, 200);
+    const { token } = await setPassword.json();
+    assert.ok(token);
+
+    async function upload(name) {
+      const formData = new FormData();
+      formData.append('padId', String(pad.id));
+      formData.append('file', new Blob(['secret file'], { type: 'text/plain' }), name);
+      const res = await fetch(`${server.baseUrl}/api/upload`, {
+        method: 'POST',
+        headers: { ...cookieHeader(alice.cookie), 'X-Pad-Token': token, Origin: server.baseUrl },
+        body: formData,
+      });
+      assert.equal(res.status, 200);
+      return res.json();
+    }
+
+    const first = await upload('first.txt');
+
+    const deleteLocked = await fetch(`${server.baseUrl}/api/files/${first.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie), Origin: server.baseUrl },
+      body: JSON.stringify({}),
+    });
+    assert.equal(deleteLocked.status, 403);
+
+    const deleteUnlocked = await fetch(`${server.baseUrl}/api/files/${first.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie), 'X-Pad-Token': token, Origin: server.baseUrl },
+      body: JSON.stringify({}),
+    });
+    assert.equal(deleteUnlocked.status, 200);
+
+    await upload('second.txt');
+
+    const clearLocked = await fetch(`${server.baseUrl}/api/files`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie), Origin: server.baseUrl },
+      body: JSON.stringify({ padId: pad.id }),
+    });
+    assert.equal(clearLocked.status, 403);
+
+    const clearUnlocked = await fetch(`${server.baseUrl}/api/files`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(alice.cookie), 'X-Pad-Token': token, Origin: server.baseUrl },
+      body: JSON.stringify({ padId: pad.id }),
+    });
+    assert.equal(clearUnlocked.status, 200);
+    assert.equal((await clearUnlocked.json()).cleared, 1);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('legacy public pad files cannot be cleared by regular users', async () => {
+  const server = await startServer({ ADMIN_TOKEN: 'admin123' });
+  try {
+    const formData = new FormData();
+    formData.append('padId', '1');
+    formData.append('file', new Blob(['x'], { type: 'text/plain' }), 'legacy-clear.txt');
+    const upload = await fetch(`${server.baseUrl}/api/upload`, {
+      method: 'POST',
+      body: formData,
+      headers: { Origin: server.baseUrl },
+    });
+    assert.equal(upload.status, 200);
+
+    const other = await registerUser(server.baseUrl);
+    const regularClear = await fetch(`${server.baseUrl}/api/files`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...cookieHeader(other.cookie), Origin: server.baseUrl },
+      body: JSON.stringify({ padId: 1 }),
+    });
+    assert.equal(regularClear.status, 403);
+
+    const adminClear = await fetch(`${server.baseUrl}/api/files`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'x-admin-token': 'admin123', Origin: server.baseUrl },
+      body: JSON.stringify({ padId: 1 }),
+    });
+    assert.equal(adminClear.status, 200);
+    assert.equal((await adminClear.json()).cleared, 1);
   } finally {
     await stopServer(server);
   }

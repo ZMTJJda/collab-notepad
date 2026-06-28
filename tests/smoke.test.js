@@ -9,13 +9,13 @@ const WebSocket = require('ws');
 
 const PROJECT_DIR = path.resolve(__dirname, '..');
 
-function startServer() {
+function startServer(extraEnv = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-notepad-'));
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['server.js'], {
       cwd: PROJECT_DIR,
-      env: { ...process.env, PORT: '0', DATA_DIR: dataDir },
+      env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -192,6 +192,9 @@ test('online count is per-pad', async () => {
     await waitForMessage(a, (msg) => msg.type === 'online-count' && msg.count === 2);
     await waitForMessage(b, (msg) => msg.type === 'online-count' && msg.count === 2);
 
+    // Create pad 2 before connecting to it (WebSocket rejects non-existent pads)
+    await fetchJson(server.baseUrl, '/api/pads', { method: 'POST' });
+
     // Client on pad 2 should NOT affect pad 1's count
     const c = await createReadyClient(server.wsUrl, 2);
     await waitForMessage(c, (msg) => msg.type === 'online-count' && msg.count === 1);
@@ -210,6 +213,9 @@ test('text updates are scoped to the same pad', async () => {
   try {
     const a = await createReadyClient(server.wsUrl, 1);
     const b = await createReadyClient(server.wsUrl, 1);
+
+    // Create pad 2 before connecting to it (WebSocket rejects non-existent pads)
+    await fetchJson(server.baseUrl, '/api/pads', { method: 'POST' });
     const c = await createReadyClient(server.wsUrl, 2);
 
     a.drain();
@@ -264,17 +270,16 @@ test('create new pad and switch to it', async () => {
 });
 
 test('pad password protection', async () => {
-  const server = await startServer();
+  const server = await startServer({ ADMIN_TOKEN: 'admin123' });
   try {
-    // Register a user (needed for destructive operations on public pads)
-    const regRes = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
-    const regData = await regRes.json();
-    const authHeaders = { 'Content-Type': 'application/json', Cookie: regRes.headers.get('set-cookie') };
-
-    // Set password on pad 1
+    // Admin sets password on pad 1
     const setPassword = await fetchJson(server.baseUrl, '/api/pads/1/password', {
       method: 'POST',
-      headers: authHeaders,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': 'admin123',
+        Origin: server.baseUrl,
+      },
       body: JSON.stringify({ password: 'secret123' }),
     });
     assert.equal(setPassword.response.status, 200);
@@ -297,7 +302,7 @@ test('pad password protection', async () => {
     // Wrong password unlock should fail
     const wrongUnlock = await fetchJson(server.baseUrl, '/api/pads/1/unlock', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl },
       body: JSON.stringify({ password: 'wrong' }),
     });
     assert.equal(wrongUnlock.response.status, 403);
@@ -305,16 +310,21 @@ test('pad password protection', async () => {
     // Correct password unlock should succeed
     const correctUnlock = await fetchJson(server.baseUrl, '/api/pads/1/unlock', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl },
       body: JSON.stringify({ password: 'secret123' }),
     });
     assert.equal(correctUnlock.response.status, 200);
     assert.ok(correctUnlock.body.token);
 
-    // Remove password
+    // Remove password (admin with unlock token)
     const removePassword = await fetchJson(server.baseUrl, '/api/pads/1/password', {
       method: 'POST',
-      headers: { ...authHeaders, 'X-Pad-Token': token },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': 'admin123',
+        'X-Pad-Token': correctUnlock.body.token,
+        Origin: server.baseUrl,
+      },
       body: JSON.stringify({ password: null }),
     });
     assert.equal(removePassword.response.status, 200);
@@ -336,6 +346,12 @@ test('file updates broadcast to same pad only', async () => {
     const cookie = regRes.headers.get('set-cookie');
 
     const a = await createReadyClient(server.wsUrl, 1);
+
+    // Create pad 2 before connecting to it (WebSocket rejects non-existent pads).
+    // Keep pad 2 public (no cookie) so the anonymous client b can join it.
+    const pad2 = await fetchJson(server.baseUrl, '/api/pads', { method: 'POST' });
+    assert.equal(pad2.response.status, 200);
+    assert.equal(pad2.body.id, 2);
     const b = await createReadyClient(server.wsUrl, 2);
 
     a.drain();
@@ -403,14 +419,19 @@ test('file updates broadcast to same pad only', async () => {
 test('clear all files', async () => {
   const server = await startServer();
   try {
-    // Register a user first (needed for clear permission)
+    // Register a user and create a pad they are allowed to manage.
     const regRes = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
-    const regData = await regRes.json();
     const cookie = regRes.headers.get('set-cookie');
+    const padRes = await fetchJson(server.baseUrl, '/api/pads', {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    });
+    assert.equal(padRes.response.status, 200);
+    const padId = padRes.body.id;
 
     for (const name of ['a.txt', 'b.txt']) {
       const formData = new FormData();
-      formData.append('padId', '1');
+      formData.append('padId', String(padId));
       formData.append('file', new Blob(['content\n'], { type: 'text/plain' }), name);
       await fetchJson(server.baseUrl, '/api/upload', { method: 'POST', body: formData, headers: { Cookie: cookie } });
     }
@@ -421,7 +442,7 @@ test('clear all files', async () => {
     const clearResult = await fetchJson(server.baseUrl, '/api/files', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json', Cookie: cookie },
-      body: JSON.stringify({ padId: 1 }),
+      body: JSON.stringify({ padId }),
     });
     assert.equal(clearResult.response.status, 200);
     assert.equal(clearResult.body.cleared, 2);
@@ -494,13 +515,13 @@ test('convert file to markdown', async () => {
     const mdFiles = fs.readdirSync(filesDir).filter(f => f.endsWith('.md'));
     assert.ok(mdFiles.length >= 1, 'Expected at least one .md file on disk');
 
-    // Duplicate convert → 409
+    // Duplicate convert (original file was deleted after first conversion) → 404
     const dup = await fetchJson(server.baseUrl, `/api/convert/${upload.body.id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({}),
     });
-    assert.equal(dup.response.status, 409);
+    assert.equal(dup.response.status, 404);
 
     // Nonexistent fileId → 404
     const missing = await fetchJson(server.baseUrl, '/api/convert/nonexistent123', {
@@ -538,6 +559,34 @@ test('convert requires file access', async () => {
       body: JSON.stringify({}),
     });
     assert.equal(convert.response.status, 403);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('convert rejects .md source files', async () => {
+  const server = await startServer();
+  try {
+    const regRes = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
+    const cookie = regRes.headers.get('set-cookie');
+
+    const formData = new FormData();
+    formData.append('padId', '1');
+    formData.append('file', new Blob(['# Hello\n'], { type: 'text/markdown' }), 'already.md');
+    const upload = await fetchJson(server.baseUrl, '/api/upload', {
+      method: 'POST',
+      headers: { Cookie: cookie },
+      body: formData,
+    });
+    assert.equal(upload.response.status, 200);
+
+    const convert = await fetchJson(server.baseUrl, `/api/convert/${upload.body.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({}),
+    });
+    assert.equal(convert.response.status, 400);
+    assert.match(convert.body.error, /Markdown/i);
   } finally {
     await stopServer(server);
   }
@@ -588,7 +637,215 @@ test('old single-pad store migrates to multi-pad', async () => {
     assert.equal(pad.body.textVersion, 5);
   } finally {
     child.kill('SIGINT');
-    await delay(500);
+    await new Promise((resolve) => {
+      child.on('exit', resolve);
+      setTimeout(resolve, 3000); // fallback if process doesn't exit
+    });
     fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('invitation lifecycle', async () => {
+  const server = await startServer();
+  try {
+    // Register two users
+    const regA = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
+    const cookieA = regA.headers.get('set-cookie');
+    const userA = await regA.json();
+
+    const regB = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
+    const cookieB = regB.headers.get('set-cookie');
+    const userB = await regB.json();
+
+    // User A creates an invitation
+    const create = await fetchJson(server.baseUrl, '/api/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieA },
+      body: JSON.stringify({ maxUses: 2, expiresInHours: 1 }),
+    });
+    assert.equal(create.response.status, 200);
+    assert.ok(create.body.token);
+    assert.equal(create.body.maxUses, 2);
+
+    // User B redeems it
+    const redeem = await fetchJson(server.baseUrl, '/api/invitations/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieB },
+      body: JSON.stringify({ token: create.body.token }),
+    });
+    assert.equal(redeem.response.status, 200);
+    assert.equal(redeem.body.grantorCode, userA.code);
+
+    // Duplicate redeem → 409
+    const dupRedeem = await fetchJson(server.baseUrl, '/api/invitations/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieB },
+      body: JSON.stringify({ token: create.body.token }),
+    });
+    assert.equal(dupRedeem.response.status, 409);
+
+    // Self-redeem → 400
+    const selfRedeem = await fetchJson(server.baseUrl, '/api/invitations/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieA },
+      body: JSON.stringify({ token: create.body.token }),
+    });
+    assert.equal(selfRedeem.response.status, 400);
+
+    // List invitations
+    const list = await fetchJson(server.baseUrl, '/api/invitations', {
+      headers: { Cookie: cookieA },
+    });
+    assert.equal(list.response.status, 200);
+    assert.equal(list.body.created.length, 1);
+    assert.equal(list.body.created[0].token, create.body.token);
+
+    // User B lists received grants
+    const listB = await fetchJson(server.baseUrl, '/api/invitations', {
+      headers: { Cookie: cookieB },
+    });
+    assert.equal(listB.response.status, 200);
+    assert.equal(listB.body.received.length, 1);
+    assert.equal(listB.body.received[0].grantorCode, userA.code);
+
+    // Delete invitation
+    const del = await fetchJson(server.baseUrl, `/api/invitations/${create.body.token}`, {
+      method: 'DELETE',
+      headers: { Cookie: cookieA },
+    });
+    assert.equal(del.response.status, 200);
+
+    // Redeem after delete → 404
+    const postDel = await fetchJson(server.baseUrl, '/api/invitations/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieB },
+      body: JSON.stringify({ token: create.body.token }),
+    });
+    assert.equal(postDel.response.status, 404);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('requireOrigin rejects cross-origin write requests', async () => {
+  const server = await startServer();
+  try {
+    // Authenticated user
+    const reg = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
+    const cookie = reg.headers.get('set-cookie');
+
+    // PUT text with disallowed Origin
+    const put = await fetch(`${server.baseUrl}/api/pads/1/text`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://evil.example.com',
+        Cookie: cookie,
+      },
+      body: JSON.stringify({ text: 'bad' }),
+    });
+    assert.equal(put.status, 403);
+    const putBody = await put.json();
+    assert.equal(putBody.error, 'Invalid origin');
+
+    // POST upload with disallowed Origin
+    const formData = new FormData();
+    formData.append('file', new Blob(['x'], { type: 'text/plain' }), 'x.txt');
+    const upload = await fetch(`${server.baseUrl}/api/upload`, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example.com', Cookie: cookie },
+      body: formData,
+    });
+    assert.equal(upload.status, 403);
+    const upBody = await upload.json();
+    assert.equal(upBody.error, 'Invalid origin');
+
+    // Same-origin (no Origin header) still works
+    const ok = await fetch(`${server.baseUrl}/api/pads/1/text`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ text: 'good' }),
+    });
+    assert.equal(ok.status, 200);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('pad routes reject invalid pad IDs', async () => {
+  const server = await startServer();
+  try {
+    const cases = [
+      { path: '/api/pads/abc', method: 'GET', expected: 400 },
+      { path: '/api/pads/0', method: 'GET', expected: 400 },
+      { path: '/api/pads/-1', method: 'GET', expected: 400 },
+      { path: '/api/pads/1.5', method: 'GET', expected: 400 },
+      { path: '/api/pads/abc/text', method: 'PUT', expected: 400 },
+      { path: '/api/pads/0/text', method: 'PUT', expected: 400 },
+      { path: '/api/pads/abc/password', method: 'POST', expected: 400 },
+      { path: '/api/pads/abc/unlock', method: 'POST', expected: 400 },
+      { path: '/api/pads/abc', method: 'DELETE', expected: 400 },
+    ];
+
+    for (const { path, method, expected } of cases) {
+      const init = { method, headers: { 'Content-Type': 'application/json' } };
+      if (method === 'PUT' || method === 'POST') {
+        init.body = JSON.stringify({ text: '', password: null });
+      }
+      const { response } = await fetchJson(server.baseUrl, path, init);
+      assert.equal(response.status, expected, `${method} ${path} should return ${expected}, got ${response.status}`);
+    }
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('deleting invitation revokes associated access grants', async () => {
+  const server = await startServer();
+  try {
+    // Register two users
+    const regA = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
+    const cookieA = regA.headers.get('set-cookie');
+
+    const regB = await fetch(`${server.baseUrl}/api/auth/register`, { method: 'POST' });
+    const cookieB = regB.headers.get('set-cookie');
+
+    // User A creates invitation
+    const create = await fetchJson(server.baseUrl, '/api/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieA },
+      body: JSON.stringify({ maxUses: 5 }),
+    });
+    assert.equal(create.response.status, 200);
+
+    // User B redeems it
+    const redeem = await fetchJson(server.baseUrl, '/api/invitations/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieB },
+      body: JSON.stringify({ token: create.body.token }),
+    });
+    assert.equal(redeem.response.status, 200);
+
+    // Verify B has the grant
+    const listBefore = await fetchJson(server.baseUrl, '/api/invitations', {
+      headers: { Cookie: cookieB },
+    });
+    assert.equal(listBefore.body.received.length, 1);
+
+    // User A deletes the invitation
+    const del = await fetchJson(server.baseUrl, `/api/invitations/${create.body.token}`, {
+      method: 'DELETE',
+      headers: { Cookie: cookieA },
+    });
+    assert.equal(del.response.status, 200);
+    assert.equal(del.body.revokedGrants, 1);
+
+    // Verify B's grant is revoked
+    const listAfter = await fetchJson(server.baseUrl, '/api/invitations', {
+      headers: { Cookie: cookieB },
+    });
+    assert.equal(listAfter.body.received.length, 0);
+  } finally {
+    await stopServer(server);
   }
 });
