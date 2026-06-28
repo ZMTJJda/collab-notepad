@@ -9,3 +9,5 @@ data/
 !.env.example
 *.png
 converter/.venv/
+CLAUDE.md
+AGENTS.md
