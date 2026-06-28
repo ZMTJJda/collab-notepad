@@ -1,7 +1,7 @@
 services:
-  collab-notepad:
+  comark-notepad:
     build: .
-    container_name: collab-notepad
+    container_name: comark-notepad
     restart: unless-stopped
 
     ports:

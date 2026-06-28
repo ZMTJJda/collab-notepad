@@ -1,6 +1,6 @@
-## Collab Notepad — Code Review
+## CoMark-Notepad — Code Review
 
-**项目**: collab-notepad  
+**项目**: comark-notepad  
 **审查日期**: 2026-06-26  
 **代码版本**: commit `828860f` (含 markitdown-ts 集成)  
 **审查范围**: server.js / public/ / tests/ / Docker 配置  

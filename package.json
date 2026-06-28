@@ -1,5 +1,5 @@
 {
-  "name": "collab-notepad",
+  "name": "comark-notepad",
   "version": "1.0.0",
   "description": "LAN real-time collaborative notepad with file sharing",
   "main": "server.js",

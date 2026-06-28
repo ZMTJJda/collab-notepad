@@ -1702,7 +1702,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   cleanupExpiredFiles();
   console.log('');
   console.log('  ╔══════════════════════════════════════════╗');
-  console.log('  ║     Collab Notepad is running!           ║');
+  console.log('  ║     CoMark-Notepad is running!         ║');
   console.log('  ╠══════════════════════════════════════════╣');
   console.log(`  ║  Local:   http://localhost:${currentPort}`.padEnd(44) + '║');
   console.log(`  ║  Network: ${url}`.padEnd(44) + '║');

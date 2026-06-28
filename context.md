@@ -1,4 +1,4 @@
-# Context — Collab Notepad
+# Context — CoMark-Notepad
 
 ## What This Project Is
 

@@ -10,7 +10,7 @@ const WebSocket = require('ws');
 const PROJECT_DIR = path.resolve(__dirname, '..');
 
 function startServer(extraEnv = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-notepad-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comark-notepad-'));
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['server.js'], {
@@ -593,7 +593,7 @@ test('convert rejects .md source files', async () => {
 });
 
 test('old single-pad store migrates to multi-pad', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-notepad-migrate-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comark-notepad-migrate-'));
   const storeFile = path.join(dataDir, 'store.json');
   const filesDir = path.join(dataDir, 'files');
   fs.mkdirSync(filesDir, { recursive: true });
