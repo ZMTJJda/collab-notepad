@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Collab Notepad</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📝</text></svg>">
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=12">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
 </head>
@@ -52,6 +52,13 @@
   <main>
     <div class="notepad-card">
       <textarea id="text-input" placeholder="Start typing..." spellcheck="false"></textarea>
+      <div class="notepad-footer">
+        <span id="text-stats" class="text-stats">0 chars · 1 line</span>
+        <button id="export-btn" class="export-btn" title="Export as Markdown">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export
+        </button>
+      </div>
     </div>
 
     <div class="files-section">
@@ -65,6 +72,10 @@
           </label>
           <div class="upload-hint">不要上传文件夹，请压缩后再上传</div>
         </div>
+      </div>
+      <div id="file-search-bar" class="file-search-bar" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="file-search" type="text" placeholder="Search files...">
       </div>
       <div id="upload-progress" class="upload-progress" hidden>
         <div class="progress-bar"><div class="progress-fill"></div></div>
@@ -148,6 +159,19 @@
     </div>
   </div>
 
+  <!-- Upload Confirm Modal -->
+  <div id="upload-confirm-modal" class="modal-overlay" hidden>
+    <div class="modal-card upload-confirm-card">
+      <h3>Upload Files</h3>
+      <p class="modal-desc">Choose how to upload these files</p>
+      <div id="upload-confirm-list" class="upload-confirm-list"></div>
+      <div class="modal-actions">
+        <button class="modal-btn cancel" id="upload-confirm-cancel">原格式上传</button>
+        <button class="modal-btn confirm" id="upload-confirm-ok">转 Markdown 上传</button>
+      </div>
+    </div>
+  </div>
+
   <div id="drop-overlay" class="drop-overlay">
     <div class="drop-overlay-content">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -157,6 +181,21 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="app.js?v=10"></script>
+  <!-- Markdown Preview Modal -->
+  <div id="preview-modal" class="modal-overlay" hidden>
+    <div class="modal-card preview-card">
+      <div class="preview-header">
+        <h3 id="preview-title">Preview</h3>
+        <button id="preview-close" class="preview-close" title="Close (Esc)" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="preview-body" class="preview-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js" integrity="sha384-Ic7KEGROu37YaruU6NyiYeib7UhjFyDZQ5fzBAji965L75T/4LGk5nzwMEjNGexs" crossorigin="anonymous"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>
