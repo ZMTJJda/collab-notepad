@@ -7,12 +7,32 @@ const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const WebSocket = require('ws');
 
+// Wrap global fetch to auto-inject Origin header for state-changing methods.
+// This ensures test requests pass CSRF origin checks without manually adding
+// Origin to every call.
+const _origFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const method = (init?.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    const url = typeof input === 'string' ? input : input.toString();
+    const headers = { ...(init?.headers || {}) };
+    if (!headers.Origin && !headers.origin) {
+      try {
+        const u = new URL(url);
+        headers.Origin = u.origin;
+      } catch {}
+    }
+    init = { ...init, headers };
+  }
+  return _origFetch(input, init);
+};
+
 const PROJECT_DIR = path.resolve(__dirname, '..');
 
 function startServer(extraEnv = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-identity-'));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['server.js'], {
+    const child = spawn(process.execPath, ['src/server.js'], {
       cwd: PROJECT_DIR,
       env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -462,7 +482,8 @@ test('missing origin header is allowed (same-origin non-browser)', async () => {
     assert.equal(getRes.status, 200);
 
     // No Origin header on POST request - should be rejected (state-changing methods require Origin)
-    const postRes = await fetch(`${server.baseUrl}/api/pads/1/password`, {
+    // Use _origFetch to bypass the auto-Origin wrapper
+    const postRes = await _origFetch(`${server.baseUrl}/api/pads/1/password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

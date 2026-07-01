@@ -13,7 +13,7 @@ function startServer(extraEnv = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comark-notepad-'));
 
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['server.js'], {
+    const child = spawn(process.execPath, ['src/server.js'], {
       cwd: PROJECT_DIR,
       env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -84,6 +84,13 @@ async function stopServer(server) {
 }
 
 async function fetchJson(baseUrl, pathname, init) {
+  // Auto-inject Origin header for state-changing methods if not already set
+  if (init && init.method && init.method !== 'GET' && init.method !== 'HEAD') {
+    const headers = init.headers || {};
+    if (!headers.Origin && !headers.origin) {
+      init.headers = { ...headers, Origin: baseUrl };
+    }
+  }
   const response = await fetch(`${baseUrl}${pathname}`, init);
   const body = await response.json();
   return { response, body };
@@ -604,7 +611,7 @@ test('old single-pad store migrates to multi-pad', async () => {
     files: [],
   }));
 
-  const child = spawn(process.execPath, ['server.js'], {
+  const child = spawn(process.execPath, ['src/server.js'], {
     cwd: PROJECT_DIR,
     env: { ...process.env, PORT: '0', DATA_DIR: dataDir },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -760,10 +767,10 @@ test('requireOrigin rejects cross-origin write requests', async () => {
     const upBody = await upload.json();
     assert.equal(upBody.error, 'Invalid origin');
 
-    // Same-origin (no Origin header) still works
+    // Same-origin (with matching Origin header) still works
     const ok = await fetch(`${server.baseUrl}/api/pads/1/text`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: server.baseUrl },
       body: JSON.stringify({ text: 'good' }),
     });
     assert.equal(ok.status, 200);

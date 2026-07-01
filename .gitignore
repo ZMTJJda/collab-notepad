@@ -11,3 +11,5 @@ data/
 converter/.venv/
 CLAUDE.md
 AGENTS.md
+*.bak
+.claude/

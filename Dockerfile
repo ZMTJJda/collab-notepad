@@ -21,7 +21,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy application code
-COPY server.js ./
+COPY src/ ./src/
 COPY convert-worker.js ./
 COPY public/ ./public/
 
@@ -44,4 +44,4 @@ ENV NODE_ENV=production \
     DATA_DIR=/app/data
 
 # Start
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]
